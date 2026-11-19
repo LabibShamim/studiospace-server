@@ -2,7 +2,7 @@ import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 import cors from "cors";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { signToken, requireAuth } from "./lib/security.js";
 import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
@@ -54,41 +54,6 @@ const auth = betterAuth({
 app.all("/api/auth/{*any}", toNodeHandler(auth));
 app.use(express.json({ limit: "8mb" }));
 
-function signToken(payload) {
-  const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const body = Buffer.from(JSON.stringify({ ...payload, iat: now, exp: now + 60 * 60 * 24 * 7 })).toString("base64url");
-  const unsigned = `${header}.${body}`;
-  const signature = createHmac("sha256", JWT_SECRET).update(unsigned).digest("base64url");
-  return `${unsigned}.${signature}`;
-}
-function verifyToken(token) {
-  if (!token) return null;
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const expected = createHmac("sha256", JWT_SECRET).update(`${parts[0]}.${parts[1]}`).digest();
-  let actual;
-  try { actual = Buffer.from(parts[2], "base64url"); } catch { return null; }
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
-  try {
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
-    if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
-    return payload;
-  } catch { return null; }
-}
-function readCookie(req, name) {
-  const raw = req.headers.cookie || "";
-  const entry = raw.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
-  return entry ? decodeURIComponent(entry.slice(name.length + 1)) : null;
-}
-function requireAuth(req, res, next) {
-  const payload = verifyToken(readCookie(req, COOKIE_NAME));
-  if (!payload?.userId || !payload?.email) {
-    return res.status(401).json({ message: "Please sign in to continue." });
-  }
-  req.user = payload;
-  next();
-}
 function validId(id) {
   return ObjectId.isValid(id) && String(new ObjectId(id)) === id;
 }
