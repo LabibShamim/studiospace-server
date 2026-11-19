@@ -4,6 +4,7 @@ import "dotenv/config";
 import cors from "cors";
 import { signToken, requireAuth } from "./lib/security.js";
 import { isValidBookingRange, confirmedOverlapFilter } from "./lib/booking-utils.js";
+import { ensureIndexes } from "./lib/indexes.js";
 import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
@@ -37,6 +38,7 @@ const db = client.db(process.env.MONGODB_DB || "studiospace");
 const studios = db.collection("Studios");
 const bookings = db.collection("bookings");
 const wishlists = db.collection("wishlists");
+await ensureIndexes({ studios, bookings, wishlists });
 
 if (!process.env.BETTER_AUTH_SECRET) throw new Error("BETTER_AUTH_SECRET is required.");
 
