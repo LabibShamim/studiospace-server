@@ -3,6 +3,7 @@ import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 import cors from "cors";
 import { signToken, requireAuth } from "./lib/security.js";
+import { isValidBookingRange, confirmedOverlapFilter } from "./lib/booking-utils.js";
 import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
@@ -165,16 +166,15 @@ app.delete("/api/studios/:id", requireAuth, asyncRoute(async (req, res) => {
 // Booking collision check: only confirmed reservations block a requested slot.
 app.post("/api/bookings", requireAuth, asyncRoute(async (req, res) => {
   const { studioId, date, startTime, endTime } = req.body || {};
-  if (!validId(studioId) || !/^\\d{4}-\\d{2}-\\d{2}$/.test(String(date || "")) || !/^\\d{2}:\\d{2}$/.test(String(startTime || "")) || !/^\\d{2}:\\d{2}$/.test(String(endTime || "")) || startTime >= endTime) {
+  if (!validId(studioId) || !isValidBookingRange(date, startTime, endTime)) {
     return res.status(400).json({ message: "Choose a valid studio, date and time range." });
   }
   const studio = await studios.findOne({ _id: new ObjectId(studioId) });
   if (!studio) return res.status(404).json({ message: "Studio not found." });
   if (studio.ownerId === req.user.userId) return res.status(400).json({ message: "You cannot book your own studio." });
-  const collision = await bookings.findOne({
-    studioId, date, status: "Confirmed",
-    startTime: { $lt: endTime }, endTime: { $gt: startTime },
-  });
+  const collision = await bookings.findOne(
+    confirmedOverlapFilter({ studioId, date, startTime, endTime })
+  );
   if (collision) return res.status(409).json({ message: "This time slot has already been confirmed. Please choose another time." });
   const hours = (new Date(`${date}T${endTime}:00`) - new Date(`${date}T${startTime}:00`)) / 3600000;
   const booking = {
@@ -210,10 +210,15 @@ app.patch("/api/bookings/:id/status", requireAuth, asyncRoute(async (req, res) =
   const booking = await bookings.findOne({ _id: new ObjectId(req.params.id), hostEmail: req.user.email, status: currentStatus });
   if (!booking) return res.status(404).json({ message: `A ${currentStatus.toLowerCase()} booking was not found for this host.` });
   if (status === "Confirmed") {
-    const collision = await bookings.findOne({
-      _id: { $ne: booking._id }, studioId: booking.studioId, date: booking.date, status: "Confirmed",
-      startTime: { $lt: booking.endTime }, endTime: { $gt: booking.startTime },
-    });
+    const collision = await bookings.findOne(
+      confirmedOverlapFilter({
+        studioId: booking.studioId,
+        date: booking.date,
+        startTime: booking.startTime,
+        endTime: booking.endTime,
+        excludeId: booking._id,
+      })
+    );
     if (collision) return res.status(409).json({ message: "This slot overlaps another confirmed booking." });
   }
   const result = await bookings.updateOne(

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "seed:examiner": "node scripts/seed-examiner.js"
+    "seed:examiner": "node scripts/seed-examiner.js",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
