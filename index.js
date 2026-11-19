@@ -6,6 +6,7 @@ import { signToken, requireAuth } from "./lib/security.js";
 import { isValidBookingRange, confirmedOverlapFilter } from "./lib/booking-utils.js";
 import { ensureIndexes } from "./lib/indexes.js";
 import { buildStudioDocument, normalizeStudioUpdate } from "./lib/studio-validation.js";
+import { uploadImageToImgBB } from "./lib/imgbb.js";
 import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
@@ -219,16 +220,8 @@ app.delete("/api/wishlist/:studioId", requireAuth, asyncRoute(async (req, res) =
 }));
 
 app.post("/api/upload", requireAuth, asyncRoute(async (req, res) => {
-  const apiKey = process.env.IMGBB_API_KEY;
-  if (!apiKey) return res.status(503).json({ message: "Image upload is not configured. Add IMGBB_API_KEY on the server." });
-  const image = String(req.body.image || "");
-  if (!image || image.length > 8_000_000) return res.status(400).json({ message: "Choose an image smaller than 6 MB." });
-  const form = new FormData();
-  form.append("image", image.replace(/^data:image\/\w+;base64,/, ""));
-  const response = await fetch(`https://api.imgbb.com/1/upload?key=${apiKey}`, { method: "POST", body: form });
-  const data = await response.json();
-  if (!response.ok || !data.success) return res.status(502).json({ message: "Image upload failed. Please try again." });
-  res.json({ url: data.data.url });
+  const url = await uploadImageToImgBB(req.body?.image, process.env.IMGBB_API_KEY);
+  res.json({ url });
 }));
 
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "StudioSpace API" }));
