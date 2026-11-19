@@ -5,6 +5,7 @@ import cors from "cors";
 import { signToken, requireAuth } from "./lib/security.js";
 import { isValidBookingRange, confirmedOverlapFilter } from "./lib/booking-utils.js";
 import { ensureIndexes } from "./lib/indexes.js";
+import { buildStudioDocument, normalizeStudioUpdate } from "./lib/studio-validation.js";
 import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
 import { betterAuth } from "better-auth";
 import { mongodbAdapter } from "@better-auth/mongo-adapter";
@@ -116,44 +117,16 @@ app.get("/api/studios/:id", asyncRoute(async (req, res) => {
   res.json(serializeStudio(studio));
 }));
 app.post(["/api/studios", "/add-studio"], requireAuth, asyncRoute(async (req, res) => {
-  const body = req.body || {};
-  const required = ["title", "category", "location", "imageUrl", "overview"];
-  for (const field of required) if (!String(body[field] || "").trim()) return res.status(400).json({ message: `${field} is required.` });
-  const doc = {
-    title: String(body.title).trim(),
-    category: String(body.category).trim(),
-    hourlyRate: Number(body.hourlyRate),
-    securityDeposit: Number(body.securityDeposit || 0),
-    maxCapacity: Number(body.maxCapacity || 1),
-    location: String(body.location).trim(),
-    imageUrl: String(body.imageUrl).trim(),
-    images: Array.isArray(body.images) ? body.images.filter((x) => typeof x === "string").slice(0, 8) : [],
-    amenities: Array.isArray(body.amenities) ? body.amenities.map(String).slice(0, 30) : [],
-    overview: String(body.overview).trim(),
-    hostName: req.user.name,
-    hostEmail: req.user.email,
-    ownerId: req.user.userId,
-    ownerEmail: req.user.email,
-    rating: 0,
-    reviews: 0,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-  if (!Number.isFinite(doc.hourlyRate) || doc.hourlyRate <= 0 || !Number.isFinite(doc.securityDeposit) || doc.securityDeposit < 0 || !Number.isInteger(doc.maxCapacity) || doc.maxCapacity < 1) {
-    return res.status(400).json({ message: "Enter valid rates, deposit and capacity." });
-  }
-  const result = await studios.insertOne(doc);
-  res.status(201).json({ message: "Studio published successfully.", studio: serializeStudio({ ...doc, _id: result.insertedId }) });
+  const { document, error } = buildStudioDocument(req.body || {}, req.user);
+  if (error) return res.status(400).json({ message: error });
+  const result = await studios.insertOne(document);
+  res.status(201).json({ message: "Studio published successfully.", studio: serializeStudio({ ...document, _id: result.insertedId }) });
 }));
+
 app.put("/api/studios/:id", requireAuth, asyncRoute(async (req, res) => {
   if (!validId(req.params.id)) return res.status(400).json({ message: "Invalid studio ID." });
-  const allowed = ["title", "category", "hourlyRate", "securityDeposit", "maxCapacity", "location", "imageUrl", "images", "amenities", "overview"];
-  const update = {};
-  for (const key of allowed) if (req.body[key] !== undefined) update[key] = req.body[key];
-  if (update.hourlyRate !== undefined) update.hourlyRate = Number(update.hourlyRate);
-  if (update.securityDeposit !== undefined) update.securityDeposit = Number(update.securityDeposit);
-  if (update.maxCapacity !== undefined) update.maxCapacity = Number(update.maxCapacity);
-  update.updatedAt = new Date();
+  const { update, error } = normalizeStudioUpdate(req.body || {});
+  if (error) return res.status(400).json({ message: error });
   const result = await studios.updateOne({ _id: new ObjectId(req.params.id), $or: [{ ownerId: req.user.userId }, { hostEmail: req.user.email }, { ownerEmail: req.user.email }] }, { $set: update });
   if (!result.matchedCount) return res.status(404).json({ message: "Studio not found or you do not own it." });
   res.json({ message: "Studio updated successfully." });
