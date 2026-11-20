@@ -447,6 +447,10 @@ app.use((error, _req, res, _next) => {
     .json({ message: error.message || "An unexpected server error occurred." });
 });
 
-app.listen(PORT, () =>
-  console.log(`StudioSpace API listening on port ${PORT}`),
-);
+if (!process.env.VERCEL) {
+  app.listen(PORT, () =>
+    console.log(`StudioSpace API listening on port ${PORT}`),
+  );
+}
+
+export default app;
