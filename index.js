@@ -1,3 +1,4 @@
+
 import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
@@ -26,6 +27,16 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const COOKIE_NAME = "studiospace_token";
 const isProduction = process.env.NODE_ENV === "production";
 
+const CLIENT_URL =
+  process.env.CLIENT_URL || "http://localhost:3000";
+
+const SERVER_URL =
+  process.env.BETTER_AUTH_URL || `http://localhost:${PORT}`;
+
+const allowedOrigins = CLIENT_URL.split(",")
+  .map((value) => value.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
 if (!MONGODB_URL) {
   throw new Error("MONGODB_URL is required.");
 }
@@ -34,17 +45,23 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   throw new Error("JWT_SECRET must be at least 32 characters.");
 }
 
-const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:3000")
-  .split(",")
-  .map((value) => value.trim().replace(/\/+$/, ""))
-  .filter(Boolean);
+if (!process.env.BETTER_AUTH_SECRET) {
+  throw new Error("BETTER_AUTH_SECRET is required.");
+}
+
+if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+  console.error("Google OAuth credentials are missing.");
+}
 
 app.use(
   cors({
-    origin: (origin, callback) => {
+    origin(origin, callback) {
       const normalizedOrigin = origin?.trim().replace(/\/+$/, "");
 
-      if (!origin || allowedOrigins.includes(normalizedOrigin)) {
+      if (
+        !origin ||
+        allowedOrigins.includes(normalizedOrigin)
+      ) {
         return callback(null, true);
       }
 
@@ -56,44 +73,71 @@ app.use(
       return callback(error);
     },
     credentials: true,
-  }),
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+    ],
+  })
 );
 
 const client = new MongoClient(MONGODB_URL);
 
 await client.connect();
 
-const db = client.db(process.env.MONGODB_DB || "studiospace");
+const db = client.db(
+  process.env.MONGODB_DB || "studiospace"
+);
 
 const studios = db.collection("Studios");
 const bookings = db.collection("bookings");
 const wishlists = db.collection("wishlists");
 
-await ensureIndexes({ studios, bookings, wishlists });
-
-if (!process.env.BETTER_AUTH_SECRET) {
-  throw new Error("BETTER_AUTH_SECRET is required.");
-}
+await ensureIndexes({
+  studios,
+  bookings,
+  wishlists,
+});
 
 const auth = betterAuth({
   database: mongodbAdapter(db),
-  baseURL: process.env.BETTER_AUTH_URL || `http://localhost:${PORT}`,
+
+  baseURL: SERVER_URL,
+
   secret: process.env.BETTER_AUTH_SECRET,
-  trustedOrigins: allowedOrigins,
+
+  trustedOrigins: [
+    ...allowedOrigins,
+    SERVER_URL,
+  ],
+
+  advanced: {
+    defaultCookieAttributes: {
+      sameSite: isProduction ? "none" : "lax",
+      secure: isProduction,
+      httpOnly: true,
+    },
+  },
+
   emailAndPassword: {
     enabled: true,
     minPasswordLength: 6,
   },
-  socialProviders:
-    process.env.GOOGLE_CLIENT_ID &&
-    process.env.GOOGLE_CLIENT_SECRET
-      ? {
-          google: {
-            clientId: process.env.GOOGLE_CLIENT_ID,
-            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-          },
-        }
-      : {},
+
+  socialProviders: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    },
+  },
+
   plugins: [jwt()],
 });
 
@@ -156,11 +200,17 @@ app.post(
         image: session.user.image,
       },
     });
-  }),
+  })
 );
 
-app.get("/api/session", requireAuth, (req, res) =>
-  res.json({ user: req.user }),
+app.get(
+  "/api/session",
+  requireAuth,
+  (req, res) => {
+    res.json({
+      user: req.user,
+    });
+  }
 );
 
 app.post("/api/logout", (req, res) => {
@@ -171,7 +221,9 @@ app.post("/api/logout", (req, res) => {
     path: "/",
   });
 
-  res.json({ message: "Signed out." });
+  res.json({
+    message: "Signed out.",
+  });
 });
 
 app.get(
@@ -182,23 +234,33 @@ app.get(
     const filter = {};
 
     if (category && category !== "All") {
+      const safeCategory = String(category).replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
       filter.category = {
-        $regex: `^${String(category).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        $regex: `^${safeCategory}$`,
         $options: "i",
       };
     }
 
     if (search) {
+      const safeSearch = String(search).replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
       filter.$or = [
         {
           title: {
-            $regex: String(search),
+            $regex: safeSearch,
             $options: "i",
           },
         },
         {
           location: {
-            $regex: String(search),
+            $regex: safeSearch,
             $options: "i",
           },
         },
@@ -207,16 +269,19 @@ app.get(
 
     let cursor = studios
       .find(filter)
-      .sort({ rating: -1, createdAt: -1 });
+      .sort({
+        rating: -1,
+        createdAt: -1,
+      });
 
     if (featured === "true") {
       cursor = cursor.limit(6);
     }
 
-    res.json(
-      (await cursor.toArray()).map(serializeStudio),
-    );
-  }),
+    const result = await cursor.toArray();
+
+    res.json(result.map(serializeStudio));
+  })
 );
 
 app.get(
@@ -231,11 +296,13 @@ app.get(
           { ownerEmail: req.user.email },
         ],
       })
-      .sort({ createdAt: -1 })
+      .sort({
+        createdAt: -1,
+      })
       .toArray();
 
     res.json(result.map(serializeStudio));
-  }),
+  })
 );
 
 app.get(
@@ -258,7 +325,7 @@ app.get(
     }
 
     res.json(serializeStudio(studio));
-  }),
+  })
 );
 
 app.post(
@@ -267,7 +334,7 @@ app.post(
   asyncRoute(async (req, res) => {
     const { document, error } = buildStudioDocument(
       req.body || {},
-      req.user,
+      req.user
     );
 
     if (error) {
@@ -285,7 +352,7 @@ app.post(
         _id: result.insertedId,
       }),
     });
-  }),
+  })
 );
 
 app.put(
@@ -298,9 +365,7 @@ app.put(
       });
     }
 
-    const { update, error } = normalizeStudioUpdate(
-      req.body || {},
-    );
+    const { update, error } = normalizeStudioUpdate(req.body || {});
 
     if (error) {
       return res.status(400).json({
@@ -317,7 +382,9 @@ app.put(
           { ownerEmail: req.user.email },
         ],
       },
-      { $set: update },
+      {
+        $set: update,
+      }
     );
 
     if (!result.matchedCount) {
@@ -329,7 +396,7 @@ app.put(
     res.json({
       message: "Studio updated successfully.",
     });
-  }),
+  })
 );
 
 app.delete(
@@ -360,7 +427,7 @@ app.delete(
     res.json({
       message: "Studio deleted successfully.",
     });
-  }),
+  })
 );
 
 app.post(
@@ -405,7 +472,7 @@ app.post(
         date,
         startTime,
         endTime,
-      }),
+      })
     );
 
     if (collision) {
@@ -451,7 +518,7 @@ app.post(
         _id: String(result.insertedId),
       },
     });
-  }),
+  })
 );
 
 app.get(
@@ -465,16 +532,18 @@ app.get(
           { hostEmail: req.user.email },
         ],
       })
-      .sort({ createdAt: -1 })
+      .sort({
+        createdAt: -1,
+      })
       .toArray();
 
     res.json(
       result.map((item) => ({
         ...item,
         _id: String(item._id),
-      })),
+      }))
     );
-  }),
+  })
 );
 
 app.patch(
@@ -498,7 +567,7 @@ app.patch(
           status: "Cancelled",
           updatedAt: new Date(),
         },
-      },
+      }
     );
 
     if (!result.matchedCount) {
@@ -510,7 +579,7 @@ app.patch(
     res.json({
       message: "Booking cancelled.",
     });
-  }),
+  })
 );
 
 app.patch(
@@ -556,7 +625,7 @@ app.patch(
           startTime: booking.startTime,
           endTime: booking.endTime,
           excludeId: booking._id,
-        }),
+        })
       );
 
       if (collision) {
@@ -576,7 +645,7 @@ app.patch(
           status,
           updatedAt: new Date(),
         },
-      },
+      }
     );
 
     if (!result.matchedCount) {
@@ -588,7 +657,7 @@ app.patch(
     res.json({
       message: `Booking ${status.toLowerCase()}.`,
     });
-  }),
+  })
 );
 
 app.get(
@@ -600,7 +669,7 @@ app.get(
     });
 
     res.json(item?.studioIds || []);
-  }),
+  })
 );
 
 app.post(
@@ -614,38 +683,50 @@ app.post(
     }
 
     await wishlists.updateOne(
-      { userId: req.user.userId },
+      {
+        userId: req.user.userId,
+      },
       {
         $addToSet: {
           studioIds: req.params.studioId,
         },
       },
-      { upsert: true },
+      {
+        upsert: true,
+      }
     );
 
     res.json({
       message: "Saved to wishlist.",
     });
-  }),
+  })
 );
 
 app.delete(
   "/api/wishlist/:studioId",
   requireAuth,
   asyncRoute(async (req, res) => {
+    if (!validId(req.params.studioId)) {
+      return res.status(400).json({
+        message: "Invalid studio ID.",
+      });
+    }
+
     await wishlists.updateOne(
-      { userId: req.user.userId },
+      {
+        userId: req.user.userId,
+      },
       {
         $pull: {
           studioIds: req.params.studioId,
         },
-      },
+      }
     );
 
     res.json({
       message: "Removed from wishlist.",
     });
-  }),
+  })
 );
 
 app.post(
@@ -654,28 +735,33 @@ app.post(
   asyncRoute(async (req, res) => {
     const url = await uploadImageToImgBB(
       req.body?.image,
-      process.env.IMGBB_API_KEY,
+      process.env.IMGBB_API_KEY
     );
 
-    res.json({ url });
-  }),
+    res.json({
+      url,
+    });
+  })
 );
 
-app.get("/health", (_req, res) =>
+app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "StudioSpace API",
-  }),
-);
+  });
+});
 
-app.get("/", (_req, res) =>
+app.get("/", (_req, res) => {
   res.json({
     message: "StudioSpace API is running.",
-  }),
-);
+  });
+});
 
 app.use((error, _req, res, _next) => {
-  console.error("API error:", error?.message || error);
+  console.error(
+    "API error:",
+    error?.stack || error?.message || error
+  );
 
   res.status(error.status || 500).json({
     message:
@@ -685,9 +771,7 @@ app.use((error, _req, res, _next) => {
 
 if (!process.env.VERCEL) {
   app.listen(PORT, () => {
-    console.log(
-      `StudioSpace API listening on port ${PORT}`,
-    );
+    console.log(`StudioSpace API listening on port ${PORT}`);
   });
 }
 
